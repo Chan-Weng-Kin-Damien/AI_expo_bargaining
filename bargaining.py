@@ -5,7 +5,7 @@ def new_game():
     """
     Initializes a new bargaining game instance using OpenSpiel.
     """
-    game = sp.load_game("bargaining(max_turns=30,discount=0.98)")
+    game = sp.load_game("bargaining")
     return game
 
 def play(game, player_actions):

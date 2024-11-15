@@ -10,21 +10,22 @@ import pyspiel as sp
 import copy
 
 class DQN(nn.Module):
-    def __init__(self, in_states=809, h1_nodes=512, h2_nodes=256, h3_nodes=128, out_actions=10):
+    def __init__(self, in_states=309, h1_nodes=512, h2_nodes=256, h3_nodes=128, out_actions=10):
         super().__init__()
         self.fc1 = nn.Linear(in_states, h1_nodes)
         self.fc2 = nn.Linear(h1_nodes, h2_nodes)
         self.fc3 = nn.Linear(h2_nodes, h3_nodes)
         self.out = nn.Linear(h3_nodes, out_actions)
 
-
     def forward(self, x):
-        x = F.relu(self.fc1(x)) # Apply rectified linear unit (ReLU) activation
+        x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         x = F.relu(self.fc3(x))
-        x = self.out(x)         # Calculate output
+        return self.out(x)
+    
+    def adjust_output_layer(self, new_out_actions):
+        self.out = nn.Linear(self.out.in_features, new_out_actions)
 
-        return x
     
 
 class Heuristics():
@@ -64,6 +65,10 @@ class Heuristics():
             new_val = [a*b for a,b in zip(offer, valuations)]
             if sum(new_val)>=6:
                 valid_offers.append(action)
+        valid_actions = state.legal_actions()
+        if not valid_actions:
+            print("No valid actions available for heuristic agent.")
+            return None  # No actions available
 
         return valid_offers[random.randint(0,len(valid_offers)-1)]
         
@@ -84,45 +89,17 @@ class ReplayMemory():
         return len(self.memory)
     
 class BargainingDQN():
-    def __init__(self):
-        # HYPERPARAMETERS
-        self.heuristic_train_rate = 1000
-        self.learning_rate = 0.0001
-        self.discount_factor = 0.99
-        self.model_sync_rate = 1000
-        self.replay_memory_size = 100000
-        self.mini_batch_size = 128
-
-        # Create the game environment
-        self.game = sp.load_game("bargaining(max_turns=30,discount=0.98)")
-        self.information_tensor_shape = self.game.information_state_tensor_shape()
-        self.num_states = self.game.information_state_tensor_size()
-        self.num_actions = self.game.num_distinct_actions()
-
-        # Define loss function and optimizer
-        self.loss_fn = nn.MSELoss()
-
-        # Initialize policy and target networks
-        self.policy_dqn = DQN(
-            in_states=self.num_states,
-            h1_nodes=512,
-            h2_nodes=256,
-            h3_nodes=128,
-            out_actions=self.num_actions,
-        )
-        self.target_dqn = DQN(
-            in_states=self.num_states,
-            h1_nodes=512,
-            h2_nodes=256,
-            h3_nodes=128,
-            out_actions=self.num_actions,
-        )
-
-        # Synchronize target and policy networks
-        self.target_dqn.load_state_dict(self.policy_dqn.state_dict())
-
-        # Initialize optimizer
-        self.optimizer = torch.optim.Adam(self.policy_dqn.parameters(), lr=self.learning_rate)
+    #HYPERPARAMETERS
+    heuristic_train_rate = 1000
+    learning_rate = 0.0001
+    discount_factor = 0.99
+    model_sync_rate = 1000     # number of steps the agent takes before syncing the policy and target network
+    replay_memory_size = 100000 # size of replay memory
+    mini_batch_size = 128     # size of the training data set sampled from the replay memory
+    tempGame = sp.load_game("bargaining(max_turns=30,discount=0.98)")
+    information_tensor_shape = tempGame.information_state_tensor_shape()
+    loss_fn = nn.MSELoss()          # NN Loss function. MSE=Mean Squared Error can be swapped to something else.
+    optimizer = None                # NN Optimizer. Initialize later.
     
 
     def train(self, episodes):
@@ -345,7 +322,7 @@ class BargainingDQN():
                     step_count=0
 
         # Save policy
-        torch.save(policy_dqn.state_dict(), "bargaining_dqn2.pt")
+        torch.save(policy_dqn.state_dict(), "bargaining_dq4.pt")
 
         # Create new graph 
         plt.figure(1)
@@ -527,24 +504,30 @@ class BargainingDQN():
 
         #print(state.legal_actions())
         #state.apply_action(0) # Offer 0 0 0
-    def state_to_action(self, state, game, model):
+    def state_to_action(self, state, game, model=1):
         num_states = game.information_state_tensor_size()
         num_actions = game.num_distinct_actions()
-        policy_dqn = DQN(in_states=num_states, h1_nodes=512, h2_nodes = 256 ,h3_nodes= 128, out_actions=num_actions)
-        if model == 1:
-            policy_dqn.load_state_dict(torch.load("bargaining_dqn.pt"))
-        else:
-            policy_dqn.load_state_dict(torch.load("bargaining_dqn2.pt"))
         
-        policy_dqn.eval()    # switch model to evaluation mode
+        # Initialize the DQN model
+        policy_dqn = DQN(in_states=num_states, h1_nodes=512, h2_nodes=256, h3_nodes=128, out_actions=num_actions)
+        
+        # If loading a model trained on different num_actions (e.g., 121), adjust the output layer
+        policy_dqn.adjust_output_layer(new_out_actions=121)
+        policy_dqn.load_state_dict(torch.load("bargaining_dqn.pt", map_location=torch.device('cpu')), strict=False)
+        
+        # Re-adjust the output layer to match the current game's action space (e.g., 10)
+        policy_dqn.adjust_output_layer(new_out_actions=num_actions)
+        policy_dqn.eval()
 
+        # Use the model to compute Q-values
         with torch.no_grad():
-            q_values = policy_dqn(torch.FloatTensor(state.information_state_tensor()).view(self.information_tensor_shape))
+            q_values = policy_dqn(torch.FloatTensor(state.information_state_tensor()))
             action_mask = torch.zeros_like(q_values, dtype=torch.bool)
-            action_mask[state.legal_actions()] = True  # Mask for valid actions only
+            action_mask[state.legal_actions()] = True
             masked_q_values = q_values.masked_fill(~action_mask, -float('inf'))
             action = masked_q_values.argmax().item()
         return action
+
 
 if __name__ == '__main__':
 
