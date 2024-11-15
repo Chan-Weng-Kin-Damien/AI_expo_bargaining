@@ -10,14 +10,13 @@ import pyspiel as sp
 import copy
 
 class DQN(nn.Module):
-    def __init__(self, in_states, h1_nodes, h2_nodes, h3_nodes, out_actions):
+    def __init__(self, in_states=809, h1_nodes=512, h2_nodes=256, h3_nodes=128, out_actions=10):
         super().__init__()
+        self.fc1 = nn.Linear(in_states, h1_nodes)
+        self.fc2 = nn.Linear(h1_nodes, h2_nodes)
+        self.fc3 = nn.Linear(h2_nodes, h3_nodes)
+        self.out = nn.Linear(h3_nodes, out_actions)
 
-        # Define network layers
-        self.fc1 = nn.Linear(in_states, h1_nodes)   # first fully connected layer
-        self.fc2 = nn.Linear(h1_nodes, h2_nodes)    # Second hidden layer
-        self.fc3 = nn.Linear(h2_nodes, h3_nodes)    # Third hidden layer
-        self.out = nn.Linear(h3_nodes, out_actions) # ouptut layer w
 
     def forward(self, x):
         x = F.relu(self.fc1(x)) # Apply rectified linear unit (ReLU) activation
@@ -85,17 +84,45 @@ class ReplayMemory():
         return len(self.memory)
     
 class BargainingDQN():
-    #HYPERPARAMETERS
-    heuristic_train_rate = 1000
-    learning_rate = 0.0001
-    discount_factor = 0.99
-    model_sync_rate = 1000     # number of steps the agent takes before syncing the policy and target network
-    replay_memory_size = 100000 # size of replay memory
-    mini_batch_size = 128     # size of the training data set sampled from the replay memory
-    tempGame = sp.load_game("bargaining(max_turns=30,discount=0.98)")
-    information_tensor_shape = tempGame.information_state_tensor_shape()
-    loss_fn = nn.MSELoss()          # NN Loss function. MSE=Mean Squared Error can be swapped to something else.
-    optimizer = None                # NN Optimizer. Initialize later.
+    def __init__(self):
+        # HYPERPARAMETERS
+        self.heuristic_train_rate = 1000
+        self.learning_rate = 0.0001
+        self.discount_factor = 0.99
+        self.model_sync_rate = 1000
+        self.replay_memory_size = 100000
+        self.mini_batch_size = 128
+
+        # Create the game environment
+        self.game = sp.load_game("bargaining(max_turns=30,discount=0.98)")
+        self.information_tensor_shape = self.game.information_state_tensor_shape()
+        self.num_states = self.game.information_state_tensor_size()
+        self.num_actions = self.game.num_distinct_actions()
+
+        # Define loss function and optimizer
+        self.loss_fn = nn.MSELoss()
+
+        # Initialize policy and target networks
+        self.policy_dqn = DQN(
+            in_states=self.num_states,
+            h1_nodes=512,
+            h2_nodes=256,
+            h3_nodes=128,
+            out_actions=self.num_actions,
+        )
+        self.target_dqn = DQN(
+            in_states=self.num_states,
+            h1_nodes=512,
+            h2_nodes=256,
+            h3_nodes=128,
+            out_actions=self.num_actions,
+        )
+
+        # Synchronize target and policy networks
+        self.target_dqn.load_state_dict(self.policy_dqn.state_dict())
+
+        # Initialize optimizer
+        self.optimizer = torch.optim.Adam(self.policy_dqn.parameters(), lr=self.learning_rate)
     
 
     def train(self, episodes):
