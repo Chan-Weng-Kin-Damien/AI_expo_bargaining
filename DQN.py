@@ -29,7 +29,7 @@ class DQN(nn.Module):
     
 
 class HeuristicAgent:
-    def __init__(self):
+    def __init__(self, max_rounds=10, alpha=0.8):
         """
         Initialize the agent with valuation for objects, number of rounds and alpha.
         Alpha controls the balance between maximizing own utility and opponent's utility.
@@ -38,9 +38,10 @@ class HeuristicAgent:
         self.pool = None
         self.state = None
         self.inferred_opponent_valuations = [2, 2, 2]  # Initial guess for opponent's valuations
-        self.round = 0  # Start at the first round
+        self.max_rounds = max_rounds  # Total number of rounds in the game
+        self.round = -1  # Start at the first round
         self.acceptance_threshold = 7  # Initial acceptance threshold (70%)
-        self.alpha = 0.8  # Weight for agent's utility in combined utility calculation
+        self.alpha = alpha  # Weight for agent's utility in combined utility calculation
 
     def set_state(self, state):
         self.state = state
@@ -50,9 +51,11 @@ class HeuristicAgent:
 
     def get_pool_and_value(self):
         # Extract relevant information from the state
+        info_lines = self.state.information_state_string().splitlines()
+
         pool = None
         valuations = None
-        info_lines = self.state.information_state_string().splitlines()
+
         # Search for lines containing "Pool" and "Valuations"
         for line in info_lines:
             if "Pool:" in line:
@@ -78,11 +81,18 @@ class HeuristicAgent:
 
     def infer_opponent_valuations(self, opponent_offer):
         """Update guessed opponent valuations based on their offers."""
+        proportion = [0,0,0]
+        for i in range(3):
+            proportion[i] = float(opponent_offer[i])/float(self.pool[i])
+        self.inferred_opponent_valuations[proportion.index(max(proportion))] += 1
+        if self.inferred_opponent_valuations[proportion.index(min(proportion))] > 0:
+            self.inferred_opponent_valuations[proportion.index(min(proportion))] -= 1
+        """
         for i, quantity in enumerate(opponent_offer):
             if quantity > 0:  # If the opponent is asking for more of this object
                 # Increase the inferred valuation for this object
                 self.inferred_opponent_valuations[i] += quantity
-
+"""
     def calc_action(self):
         """Calculate the next action (offer) based on current state."""
         # Get all possible legal actions (offers or counter-offers) the agent can take
@@ -102,12 +112,14 @@ class HeuristicAgent:
         for action in legal_actions:
             # Convert the action to a human-readable offer format
             offer = self.parse_offer(self.state.action_to_string(action))
-
+            opponent_offer= [0,0,0]
+            for i in range(3):
+                opponent_offer[i] = self.pool[i] - offer[i]
             # Calculate the agent's utility for this offer
             agent_utility = self.evaluate_offer(offer, self.valuations)
 
             # Estimate opponent's utility for this offer based on inferred valuations
-            opponent_utility = self.evaluate_offer(offer, self.inferred_opponent_valuations)
+            opponent_utility = self.evaluate_offer(opponent_offer, self.inferred_opponent_valuations)
 
             # Combined utility: Maximize both agent's and opponent's utility
             combined_utility = self.alpha * agent_utility + (1 - self.alpha) * opponent_utility
@@ -118,7 +130,7 @@ class HeuristicAgent:
                 best_action = action
 
         # Increase the round counter after making a decision
-        self.round += 1
+        self.round += 2
         self.adjust_acceptance_threshold()  # Adjust the acceptance threshold for the next round43
         return best_action
 
@@ -130,22 +142,25 @@ class HeuristicAgent:
         """Decide whether to accept or reject the opponent's offer."""
         #extract the offer from the state info
         opponent_offer = None
+        offer = [0,0,0]
         info_lines = self.state.information_state_string().splitlines()
         for line in info_lines:
             if "Offer:" in line:
                 opponent_offer = list(map(int, line.split(":")[2].strip().split(" ")))
+        
+        for i in range(3):
+            offer[i] = self.pool[i] - opponent_offer[i]
         # In each round, infer the opponent's preferences from their offer
         self.infer_opponent_valuations(opponent_offer)
 
         # Evaluate the opponent's offer and decide whether to accept or reject
-        agent_utility = self.evaluate_offer(opponent_offer, self.valuations)
+        agent_utility = self.evaluate_offer(offer, self.valuations)
 
         # Calculate the minimum utility required to accept the offer
         required_utility = self.acceptance_threshold
 
         # Accept the offer if it meets the acceptance threshold and provides good value to both
         if agent_utility >= required_utility:
-            print(agent_utility)
             return "accept"
         else:
             return "reject"
